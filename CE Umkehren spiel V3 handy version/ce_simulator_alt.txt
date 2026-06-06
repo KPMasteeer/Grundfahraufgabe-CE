@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>CE Simulator</title>
+
+<style>
+body {
+  margin: 0;
+  background: #222;
+  color: white;
+  font-family: Arial, sans-serif;
+  text-align: center;
+}
+
+canvas {
+  background: #2b2b2b;
+  display: block;
+  margin: 15px auto;
+  border: 3px solid white;
+}
+
+.controls {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 35px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+button {
+  font-size: 20px;
+  padding: 15px 25px;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.pedal {
+  width: 130px;
+  height: 100px;
+  color: white;
+  font-weight: bold;
+}
+
+.gas { background: #1f8f3a; }
+.brake { background: #9b1c1c; }
+
+.steeringPanel {
+  background: #333;
+  padding: 15px;
+  border-radius: 15px;
+  border: 2px solid white;
+}
+
+.steerButtons {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+#steerDisplay {
+  font-size: 22px;
+  margin-bottom: 12px;
+}
+</style>
+</head>
+
+<body>
+
+<h2>CE Grundfahraufgabe</h2>
+<p>Umkehren durch Rückwärtsfahren nach links</p>
+
+<canvas id="game" width="1100" height="700"></canvas>
+
+<div class="controls">
+  <button class="pedal brake" id="brakeBtn">Bremse<br>Rückwärts</button>
+
+  <div class="steeringPanel">
+    <div id="steerDisplay">Lenkeinschlag: 0 %</div>
+    <div class="steerButtons">
+      <button id="leftBtn">◀ Links</button>
+      <button id="centerBtn">Gerade</button>
+      <button id="rightBtn">Rechts ▶</button>
+    </div>
+  </div>
+
+  <button class="pedal gas" id="gasBtn">Gas<br>Vorwärts</button>
+</div>
+
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+const gasBtn = document.getElementById("gasBtn");
+const brakeBtn = document.getElementById("brakeBtn");
+const leftBtn = document.getElementById("leftBtn");
+const rightBtn = document.getElementById("rightBtn");
+const centerBtn = document.getElementById("centerBtn");
+const steerDisplay = document.getElementById("steerDisplay");
+
+const keys = {};
+document.addEventListener("keydown", e => {
+  keys[e.key.toLowerCase()] = true;
+  if (["w", "a", "s", "d", "r", " "].includes(e.key.toLowerCase())) {
+    e.preventDefault();
+  }
+});
+
+document.addEventListener("keyup", e => {
+  keys[e.key.toLowerCase()] = false;
+});
+
+let gasPressed = false;
+let brakePressed = false;
+let leftPressed = false;
+let rightPressed = false;
+
+function holdButton(button, setter) {
+  button.addEventListener("mousedown", () => setter(true));
+  button.addEventListener("mouseup", () => setter(false));
+  button.addEventListener("mouseleave", () => setter(false));
+
+  button.addEventListener("touchstart", e => {
+    e.preventDefault();
+    setter(true);
+  }, { passive: false });
+
+  button.addEventListener("touchend", e => {
+    e.preventDefault();
+    setter(false);
+  });
+
+  button.addEventListener("touchcancel", () => setter(false));
+}
+
+holdButton(gasBtn, v => gasPressed = v);
+holdButton(brakeBtn, v => brakePressed = v);
+holdButton(leftBtn, v => leftPressed = v);
+holdButton(rightBtn, v => rightPressed = v);
+
+centerBtn.addEventListener("click", () => {
+  steeringValue = 0;
+});
+
+// Bilder laden
+const envImage = new Image();
+const truckImageRaw = new Image();
+const trailerImageRaw = new Image();
+
+let envLoaded = false;
+let truckSpriteLoaded = false;
+let trailerSpriteLoaded = false;
+
+envImage.src = "umgebung.png";
+truckImageRaw.src = "fahrzeug_sprite_1.png";
+trailerImageRaw.src = "fahrzeug_sprite_2.png";
+
+envImage.onload = () => envLoaded = true;
+
+const truckSpriteCanvas = document.createElement("canvas");
+const truckSpriteCtx = truckSpriteCanvas.getContext("2d");
+
+const trailerSpriteCanvas = document.createElement("canvas");
+const trailerSpriteCtx = trailerSpriteCanvas.getContext("2d");
+
+truckImageRaw.onload = () => {
+  prepareTransparentSprite(truckImageRaw, truckSpriteCanvas, truckSpriteCtx);
+  truckSpriteLoaded = true;
+};
+
+trailerImageRaw.onload = () => {
+  prepareTransparentSprite(trailerImageRaw, trailerSpriteCanvas, trailerSpriteCtx);
+  trailerSpriteLoaded = true;
+};
+
+function prepareTransparentSprite(image, spriteCanvas, spriteCtx) {
+  spriteCanvas.width = image.width;
+  spriteCanvas.height = image.height;
+
+  spriteCtx.clearRect(0, 0, spriteCanvas.width, spriteCanvas.height);
+  spriteCtx.drawImage(image, 0, 0);
+
+  const imageData = spriteCtx.getImageData(0, 0, spriteCanvas.width, spriteCanvas.height);
+  const data = imageData.data;
+
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+
+    if (r > 235 && g > 235 && b > 235) {
+      data[i + 3] = 0;
+    }
+  }
+
+  spriteCtx.putImageData(imageData, 0, 0);
+}
+
+let truck, trailer;
+let crashed = false;
+let steeringValue = 0;
+
+function reset() {
+  crashed = false;
+  steeringValue = 0;
+
+  truck = {
+    x: 650,
+    y: 155,
+    angle: Math.PI,
+    speed: 0,
+    length: 260,
+    width: 72,
+    steeringAngle: 0
+  };
+
+  trailer = {
+    x: 1030,
+    y: 155,
+    angle: Math.PI,
+    length: 230,
+    width: 70,
+    drawbarAngle: Math.PI,
+    drawbarLength: 105
+  };
+}
+
+reset();
+
+function update() {
+  if (keys["r"]) reset();
+  if (crashed) return;
+
+  if (keys["w"] || gasPressed) truck.speed += 0.01;
+  if (keys["s"] || brakePressed) truck.speed -= 0.01;
+
+  truck.speed *= 0.968;
+  truck.speed = Math.max(Math.min(truck.speed, 3.5), -2.8);
+
+  if (keys["a"] || leftPressed) steeringValue -= 0.018;
+  if (keys["d"] || rightPressed) steeringValue += 0.018;
+
+  steeringValue = Math.max(Math.min(steeringValue, 1), -1);
+  truck.steeringAngle = steeringValue * 0.6;
+
+  if (Math.abs(truck.speed) > 0.03) {
+    truck.angle += truck.steeringAngle * truck.speed * 0.02;
+  }
+
+  truck.x += Math.cos(truck.angle) * truck.speed;
+  truck.y += Math.sin(truck.angle) * truck.speed;
+
+  updateTrailer();
+
+  if (checkTruckTrailerCollision()) {
+    crashed = true;
+    truck.speed = 0;
+  }
+
+  steerDisplay.innerText = "Lenkeinschlag: " + Math.round(steeringValue * 100) + " %";
+}
+
+function updateTrailer() {
+  const hitchX = truck.x - Math.cos(truck.angle) * truck.length / 2;
+  const hitchY = truck.y - Math.sin(truck.angle) * truck.length / 2;
+
+  const frontAxleX = trailer.x + Math.cos(trailer.angle) * (trailer.length / 2 - 25);
+  const frontAxleY = trailer.y + Math.sin(trailer.angle) * (trailer.length / 2 - 25);
+
+  let dx = hitchX - frontAxleX;
+  let dy = hitchY - frontAxleY;
+
+  trailer.drawbarAngle = Math.atan2(dy, dx);
+
+  const newFrontAxleX = hitchX - Math.cos(trailer.drawbarAngle) * trailer.drawbarLength;
+  const newFrontAxleY = hitchY - Math.sin(trailer.drawbarAngle) * trailer.drawbarLength;
+
+  dx = newFrontAxleX - trailer.x;
+  dy = newFrontAxleY - trailer.y;
+
+  trailer.angle = Math.atan2(dy, dx);
+  trailer.x = newFrontAxleX - Math.cos(trailer.angle) * (trailer.length / 2 - 25);
+  trailer.y = newFrontAxleY - Math.sin(trailer.angle) * (trailer.length / 2 - 25);
+}
+
+function getCorners(obj) {
+  const c = Math.cos(obj.angle);
+  const s = Math.sin(obj.angle);
+  const hl = obj.length / 2;
+  const hw = obj.width / 2;
+
+  return [
+    { x: obj.x + c * hl - s * hw, y: obj.y + s * hl + c * hw },
+    { x: obj.x + c * hl + s * hw, y: obj.y + s * hl - c * hw },
+    { x: obj.x - c * hl + s * hw, y: obj.y - s * hl - c * hw },
+    { x: obj.x - c * hl - s * hw, y: obj.y - s * hl + c * hw }
+  ];
+}
+
+function project(axis, points) {
+  let min = points[0].x * axis.x + points[0].y * axis.y;
+  let max = min;
+
+  for (const p of points) {
+    const val = p.x * axis.x + p.y * axis.y;
+    min = Math.min(min, val);
+    max = Math.max(max, val);
+  }
+
+  return { min, max };
+}
+
+function polygonsCollide(a, b) {
+  const polygons = [a, b];
+
+  for (const poly of polygons) {
+    for (let i = 0; i < poly.length; i++) {
+      const p1 = poly[i];
+      const p2 = poly[(i + 1) % poly.length];
+
+      const edge = { x: p2.x - p1.x, y: p2.y - p1.y };
+      const axis = { x: -edge.y, y: edge.x };
+
+      const len = Math.hypot(axis.x, axis.y);
+      axis.x /= len;
+      axis.y /= len;
+
+      const pa = project(axis, a);
+      const pb = project(axis, b);
+
+      if (pa.max < pb.min || pb.max < pa.min) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+function checkTruckTrailerCollision() {
+  return polygonsCollide(getCorners(truck), getCorners(trailer));
+}
+
+function drawFallbackRoad() {
+  ctx.fillStyle = "#3f7f35";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.fillStyle = "#666";
+  ctx.fillRect(0, 80, canvas.width, 150);
+  ctx.fillRect(canvas.width / 2 - 110, 200, 220, canvas.height - 200);
+}
+
+function drawRoad() {
+  if (envLoaded) {
+    ctx.drawImage(envImage, 0, 0, envImage.width, envImage.height, 0, 0, canvas.width, canvas.height);
+  } else {
+    drawFallbackRoad();
+  }
+
+  ctx.strokeStyle = "yellow";
+  ctx.lineWidth = 4;
+  ctx.strokeRect(490, 360, 120, 175);
+
+  ctx.fillStyle = "white";
+  ctx.font = "18px Arial";
+  ctx.fillText("Zielbereich", 500, 395);
+  ctx.fillText("rückwärts", 510, 420);
+
+  ctx.fillStyle = "rgba(0,0,0,0.45)";
+  ctx.fillRect(220, 18, 660, 38);
+
+  ctx.fillStyle = "white";
+  ctx.font = "22px Arial";
+  ctx.fillText("Grundfahraufgabe CE: Umkehren durch Rückwärtsfahren nach links", 230, 45);
+}
+
+function drawWheel(x, y, angle) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  ctx.fillStyle = "black";
+  ctx.fillRect(-13, -5, 26, 10);
+  ctx.restore();
+}
+
+function drawFallbackVehicle(obj, color) {
+  ctx.save();
+  ctx.translate(obj.x, obj.y);
+  ctx.rotate(obj.angle);
+  ctx.fillStyle = color;
+  ctx.fillRect(-obj.length / 2, -obj.width / 2, obj.length, obj.width);
+  ctx.strokeStyle = "black";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(-obj.length / 2, -obj.width / 2, obj.length, obj.width);
+  ctx.restore();
+}
+
+function drawSpriteImage(obj, imageCanvas) {
+  ctx.save();
+  ctx.translate(obj.x, obj.y);
+
+  // Deine Fahrzeugbilder zeigen nach rechts.
+  // Die Fahrphysik arbeitet ebenfalls nach rechts bei Winkel 0.
+  ctx.rotate(obj.angle);
+
+  ctx.drawImage(
+    imageCanvas,
+    -obj.length / 2,
+    -obj.width / 2,
+    obj.length,
+    obj.width
+  );
+
+  ctx.restore();
+}
+
+function drawTruck() {
+  if (truckSpriteLoaded) {
+    drawSpriteImage(truck, truckSpriteCanvas);
+  } else {
+    drawFallbackVehicle(truck, "white");
+  }
+
+  ctx.save();
+  ctx.translate(truck.x, truck.y);
+  ctx.rotate(truck.angle);
+
+  drawWheel(-65, -truck.width / 2 - 7, 0);
+  drawWheel(-65, truck.width / 2 + 7, 0);
+
+  drawWheel(65, -truck.width / 2 - 7, truck.steeringAngle);
+  drawWheel(65, truck.width / 2 + 7, truck.steeringAngle);
+
+  ctx.restore();
+}
+
+function drawTrailer() {
+  if (trailerSpriteLoaded) {
+    drawSpriteImage(trailer, trailerSpriteCanvas);
+  } else {
+    drawFallbackVehicle(trailer, "green");
+  }
+
+  ctx.save();
+  ctx.translate(trailer.x, trailer.y);
+  ctx.rotate(trailer.angle);
+
+  drawWheel(-55, -trailer.width / 2 - 7, 0);
+  drawWheel(-55, trailer.width / 2 + 7, 0);
+
+  const frontAxleX = trailer.length / 2 - 25;
+  const axleAngle = trailer.drawbarAngle - trailer.angle;
+
+  ctx.save();
+  ctx.translate(frontAxleX, 0);
+  ctx.rotate(axleAngle);
+
+  ctx.strokeStyle = "black";
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.moveTo(0, -trailer.width / 2);
+  ctx.lineTo(0, trailer.width / 2);
+  ctx.stroke();
+
+  drawWheel(0, -trailer.width / 2 - 7, 0);
+  drawWheel(0, trailer.width / 2 + 7, 0);
+
+  ctx.restore();
+  ctx.restore();
+}
+
+function drawDrawbar() {
+  const hitchX = truck.x - Math.cos(truck.angle) * truck.length / 2;
+  const hitchY = truck.y - Math.sin(truck.angle) * truck.length / 2;
+
+  const axleX = trailer.x + Math.cos(trailer.angle) * (trailer.length / 2 - 25);
+  const axleY = trailer.y + Math.sin(trailer.angle) * (trailer.length / 2 - 25);
+
+  const leftX = axleX + Math.cos(trailer.drawbarAngle + Math.PI / 2) * 27;
+  const leftY = axleY + Math.sin(trailer.drawbarAngle + Math.PI / 2) * 27;
+
+  const rightX = axleX + Math.cos(trailer.drawbarAngle - Math.PI / 2) * 27;
+  const rightY = axleY + Math.sin(trailer.drawbarAngle - Math.PI / 2) * 27;
+
+  ctx.beginPath();
+  ctx.moveTo(hitchX, hitchY);
+  ctx.lineTo(leftX, leftY);
+  ctx.lineTo(rightX, rightY);
+  ctx.closePath();
+
+  ctx.fillStyle = "#1d1d1d";
+  ctx.fill();
+  ctx.strokeStyle = "black";
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(hitchX, hitchY, 5, 0, Math.PI * 2);
+  ctx.fillStyle = "black";
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(axleX, axleY, 8, 0, Math.PI * 2);
+  ctx.fillStyle = "red";
+  ctx.fill();
+}
+
+function drawHud() {
+  ctx.fillStyle = "rgba(0,0,0,0.45)";
+  ctx.fillRect(20, 650, 240, 35);
+
+  ctx.fillStyle = "white";
+  ctx.font = "18px Arial";
+  ctx.fillText("Tempo: " + truck.speed.toFixed(2), 35, 673);
+  ctx.fillText("R = Neustart", 150, 673);
+}
+
+function drawCollisionOverlay() {
+  ctx.fillStyle = "rgba(0,0,0,0.75)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.fillStyle = "red";
+  ctx.font = "52px Arial";
+  ctx.fillText("KOLLISION!", 390, 310);
+
+  ctx.fillStyle = "white";
+  ctx.font = "24px Arial";
+  ctx.fillText("LKW hat den Anhänger berührt", 380, 355);
+  ctx.fillText("Drücke R zum Neustart", 420, 395);
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  drawRoad();
+  drawTrailer();
+  drawDrawbar();
+  drawTruck();
+  drawHud();
+
+  if (crashed) {
+    drawCollisionOverlay();
+  }
+}
+
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+
+</body>
+</html>
